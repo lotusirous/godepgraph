@@ -6,45 +6,32 @@ import (
 	"go/build"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+
+	"golang.org/x/mod/modfile"
 )
 
 var (
-	pkgs        map[string]*build.Package
-	erroredPkgs map[string]bool
-	ids         map[string]string
+	pkgs              map[string]*build.Package
+	erroredPkgs       map[string]bool
+	ids               map[string]string
+	module, requireds = parseModFile()
 
-	ignored = map[string]bool{
-		"C": true,
-	}
-	ignoredPrefixes []string
-	onlyPrefixes    []string
+	ignoreModFile = flag.Bool("mod", true, "use the mod file")
+	stopOnError   = flag.Bool("stoponerror", true, "stop on package import errors")
+	horizontal    = flag.Bool("horizontal", false, "lay out the dependency graph horizontally instead of vertically")
+	withTests     = flag.Bool("withtests", false, "include test packages")
+	maxLevel      = flag.Int("maxlevel", 256, "max level of go dependency graph")
 
-	ignoreStdlib   = flag.Bool("nostdlib", false, "ignore packages in the Go standard library")
-	ignoreVendor   = flag.Bool("novendor", false, "ignore packages in the vendor directory")
-	stopOnError    = flag.Bool("stoponerror", true, "stop on package import errors")
-	withGoroot     = flag.Bool("withgoroot", false, "show dependencies of packages in the Go standard library")
-	ignorePrefixes = flag.String("ignoreprefixes", "", "a comma-separated list of prefixes to ignore")
-	ignorePackages = flag.String("ignorepackages", "", "a comma-separated list of packages to ignore")
-	onlyPrefix     = flag.String("onlyprefixes", "", "a comma-separated list of prefixes to include")
-	tagList        = flag.String("tags", "", "a comma-separated list of build tags to consider satisfied during the build")
-	horizontal     = flag.Bool("horizontal", false, "lay out the dependency graph horizontally instead of vertically")
-	withTests      = flag.Bool("withtests", false, "include test packages")
-	maxLevel       = flag.Int("maxlevel", 256, "max level of go dependency graph")
-
-	buildTags    []string
 	buildContext = build.Default
 )
 
 func init() {
-	flag.BoolVar(ignoreStdlib, "s", false, "(alias for -nostdlib) ignore packages in the Go standard library")
-	flag.StringVar(ignorePrefixes, "p", "", "(alias for -ignoreprefixes) a comma-separated list of prefixes to ignore")
-	flag.StringVar(ignorePackages, "i", "", "(alias for -ignorepackages) a comma-separated list of packages to ignore")
-	flag.StringVar(onlyPrefix, "o", "", "(alias for -onlyprefixes) a comma-separated list of prefixes to include")
+	flag.BoolVar(ignoreModFile, "m", true, "ignore the package in mod file")
 	flag.BoolVar(withTests, "t", false, "(alias for -withtests) include test packages")
 	flag.IntVar(maxLevel, "l", 256, "(alias for -maxlevel) maximum level of the go dependency graph")
-	flag.BoolVar(withGoroot, "d", false, "(alias for -withgoroot) show dependencies of packages in the Go standard library")
 }
 
 func main() {
@@ -58,22 +45,6 @@ func main() {
 	if len(args) < 1 {
 		log.Fatal("need one package name to process")
 	}
-
-	if *ignorePrefixes != "" {
-		ignoredPrefixes = strings.Split(*ignorePrefixes, ",")
-	}
-	if *onlyPrefix != "" {
-		onlyPrefixes = strings.Split(*onlyPrefix, ",")
-	}
-	if *ignorePackages != "" {
-		for _, p := range strings.Split(*ignorePackages, ",") {
-			ignored[p] = true
-		}
-	}
-	if *tagList != "" {
-		buildTags = strings.Split(*tagList, ",")
-	}
-	buildContext.BuildTags = buildTags
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -117,7 +88,7 @@ edge [arrowsize="0.5"]
 			color = "palegreen"
 		case len(pkg.CgoFiles) > 0:
 			color = "darkgoldenrod1"
-		case isVendored(pkg.ImportPath):
+		case isInModFile(pkg.ImportPath):
 			color = "palegoldenrod"
 		case hasBuildErrors(pkg):
 			color = "red"
@@ -126,11 +97,6 @@ edge [arrowsize="0.5"]
 		}
 
 		fmt.Printf("%s [label=\"%s\" color=\"%s\" target=\"_blank\"];\n", pkgId, pkgName, color)
-
-		// Don't render imports from packages in Goroot
-		if pkg.Goroot && !*withGoroot {
-			continue
-		}
 
 		for _, imp := range getImports(pkg) {
 			impPkg := pkgs[imp]
@@ -145,15 +111,8 @@ edge [arrowsize="0.5"]
 	fmt.Println("}")
 }
 
-func pkgDocsURL(pkgName string) string {
-	return "https://godoc.org/" + pkgName
-}
-
 func processPackage(root string, pkgName string, level int, importedBy string, stopOnError bool) error {
 	if level++; level > *maxLevel {
-		return nil
-	}
-	if ignored[pkgName] {
 		return nil
 	}
 
@@ -168,17 +127,12 @@ func processPackage(root string, pkgName string, level int, importedBy string, s
 		return nil
 	}
 
-	importPath := normalizeVendor(pkgName)
+	importPath := pkgName
 	if buildErr != nil {
 		erroredPkgs[importPath] = true
 	}
 
 	pkgs[importPath] = pkg
-
-	// Don't worry about dependencies for stdlib packages
-	if pkg.Goroot && !*withGoroot {
-		return nil
-	}
 
 	for _, imp := range getImports(pkg) {
 		if _, ok := pkgs[imp]; !ok {
@@ -199,7 +153,7 @@ func getImports(pkg *build.Package) []string {
 	var imports []string
 	found := make(map[string]struct{})
 	for _, imp := range allImports {
-		if imp == normalizeVendor(pkg.ImportPath) {
+		if imp == pkg.ImportPath {
 			// Don't draw a self-reference when foo_test depends on foo.
 			continue
 		}
@@ -227,24 +181,12 @@ func getId(name string) string {
 	return id
 }
 
-func hasPrefixes(s string, prefixes []string) bool {
-	for _, p := range prefixes {
-		if strings.HasPrefix(s, p) {
-			return true
-		}
-	}
-	return false
-}
-
 func isIgnored(pkg *build.Package) bool {
-	if len(onlyPrefixes) > 0 && !hasPrefixes(normalizeVendor(pkg.ImportPath), onlyPrefixes) {
+	if isInModFile(getId(pkg.ImportPath)) {
 		return true
 	}
-
-	if *ignoreVendor && isVendored(pkg.ImportPath) {
-		return true
-	}
-	return ignored[normalizeVendor(pkg.ImportPath)] || (pkg.Goroot && *ignoreStdlib) || hasPrefixes(normalizeVendor(pkg.ImportPath), ignoredPrefixes)
+	return pkg.Goroot
+	// return pkg.ImportPath || (pkg.Goroot && *ignoreStdlib) || hasPrefixes(pkg.ImportPath, ignoredPrefixes)]
 }
 
 func hasBuildErrors(pkg *build.Package) bool {
@@ -252,7 +194,7 @@ func hasBuildErrors(pkg *build.Package) bool {
 		return false
 	}
 
-	v, ok := erroredPkgs[normalizeVendor(pkg.ImportPath)]
+	v, ok := erroredPkgs[pkg.ImportPath]
 	if !ok {
 		return false
 	}
@@ -267,11 +209,39 @@ func debugf(s string, args ...any) {
 	fmt.Fprintf(os.Stderr, s, args...)
 }
 
-func isVendored(path string) bool {
-	return strings.Contains(path, "/vendor/")
+func isInModFile(path string) bool {
+	for _, p := range requireds {
+		if strings.Contains(path, p) {
+			return true
+		}
+	}
+	return false
 }
 
-func normalizeVendor(path string) string {
-	pieces := strings.Split(path, "vendor/")
-	return pieces[len(pieces)-1]
+func die(err error, msg string) {
+	if err != nil {
+		log.Fatalf("%s: %s", msg, err)
+	}
+}
+
+func parseModFile() (module string, required []string) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		die(err, "cannot get current dir")
+	}
+	file := filepath.Join(cwd, "go.mod")
+	data, err := os.ReadFile(file)
+	if err != nil {
+		die(err, "cannot read go.mod")
+	}
+
+	modFile, err := modfile.Parse(file, data, nil)
+	if err != nil {
+		die(err, "failed to parse mod file")
+	}
+	module = modFile.Module.Mod.Path
+	for _, r := range modFile.Require {
+		required = append(required, r.Mod.Path)
+	}
+	return
 }
