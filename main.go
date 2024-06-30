@@ -89,7 +89,7 @@ func main() {
 	if *horizontal {
 		fmt.Println(`rankdir="LR"`)
 	}
-	fmt.Print(`splines=ortho
+	fmt.Print(`splines=spline
 nodesep=0.4
 ranksep=0.8
 node [shape="box",style="rounded,filled"]
@@ -125,7 +125,7 @@ edge [arrowsize="0.5"]
 			color = "paleturquoise"
 		}
 
-		fmt.Printf("%s [label=\"%s\" color=\"%s\" URL=\"%s\" target=\"_blank\"];\n", pkgId, pkgName, color, pkgDocsURL(pkgName))
+		fmt.Printf("%s [label=\"%s\" color=\"%s\" target=\"_blank\"];\n", pkgId, pkgName, color)
 
 		// Don't render imports from packages in Goroot
 		if pkg.Goroot && !*withGoroot {
@@ -259,11 +259,11 @@ func hasBuildErrors(pkg *build.Package) bool {
 	return v
 }
 
-func debug(args ...interface{}) {
+func debug(args ...any) {
 	fmt.Fprintln(os.Stderr, args...)
 }
 
-func debugf(s string, args ...interface{}) {
+func debugf(s string, args ...any) {
 	fmt.Fprintf(os.Stderr, s, args...)
 }
 
