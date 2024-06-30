@@ -14,10 +14,12 @@ import (
 )
 
 var (
-	pkgs              map[string]*build.Package
-	erroredPkgs       map[string]bool
-	ids               map[string]string
-	module, requireds = parseModFile()
+	pkgs            = make(map[string]*build.Package)
+	erroredPkgs     = make(map[string]bool)
+	ids             = make(map[string]string)
+	module          = ""
+	cwd             = ""
+	requiredModules = make([]string, 0)
 
 	ignoreModFile = flag.Bool("mod", true, "use the mod file")
 	stopOnError   = flag.Bool("stoponerror", true, "stop on package import errors")
@@ -34,22 +36,23 @@ func init() {
 	flag.IntVar(maxLevel, "l", 256, "(alias for -maxlevel) maximum level of the go dependency graph")
 }
 
-func main() {
-	pkgs = make(map[string]*build.Package)
-	erroredPkgs = make(map[string]bool)
-	ids = make(map[string]string)
-	flag.Parse()
+func mustGetCwd() string {
+	current, err := os.Getwd()
+	if err != nil {
+		die(err, "failed to get current dir")
+	}
+	return current
+}
 
+func main() {
+	flag.Parse()
 	args := flag.Args()
 
 	if len(args) < 1 {
 		log.Fatal("need one package name to process")
 	}
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		log.Fatalf("failed to get cwd: %s", err)
-	}
+	cwd = mustGetCwd()
+	module, requiredModules = mustParseModFile()
 	for _, a := range args {
 		if err := processPackage(cwd, a, 0, "", *stopOnError); err != nil {
 			log.Fatal(err)
@@ -207,7 +210,7 @@ func hasBuildErrors(pkg *build.Package) bool {
 }
 
 func isInModFile(path string) bool {
-	for _, p := range requireds {
+	for _, p := range requiredModules {
 		if strings.Contains(path, p) {
 			return true
 		}
@@ -221,7 +224,7 @@ func die(err error, msg string) {
 	}
 }
 
-func parseModFile() (module string, required []string) {
+func mustParseModFile() (module string, required []string) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		die(err, "cannot get current dir")
