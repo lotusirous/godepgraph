@@ -82,20 +82,7 @@ edge [arrowsize="0.5"]
 			continue
 		}
 
-		var color string
-		switch {
-		case pkg.Goroot:
-			color = "palegreen"
-		case len(pkg.CgoFiles) > 0:
-			color = "darkgoldenrod1"
-		case isInModFile(pkg.ImportPath):
-			color = "palegoldenrod"
-		case hasBuildErrors(pkg):
-			color = "red"
-		default:
-			color = "paleturquoise"
-		}
-
+		color := nodeColor(pkg)
 		fmt.Printf("%s [label=\"%s\" color=\"%s\" target=\"_blank\"];\n", pkgId, pkgName, color)
 
 		for _, imp := range getImports(pkg) {
@@ -109,6 +96,24 @@ edge [arrowsize="0.5"]
 		}
 	}
 	fmt.Println("}")
+}
+
+func nodeColor(pkg *build.Package) string {
+
+	var color string
+	switch {
+	case pkg.Goroot:
+		color = "palegreen"
+	case len(pkg.CgoFiles) > 0:
+		color = "darkgoldenrod1"
+	case isInModFile(pkg.ImportPath):
+		color = "palegoldenrod"
+	case hasBuildErrors(pkg):
+		color = "red"
+	default:
+		color = "paleturquoise"
+	}
+	return color
 }
 
 func processPackage(root string, pkgName string, level int, importedBy string, stopOnError bool) error {
@@ -199,14 +204,6 @@ func hasBuildErrors(pkg *build.Package) bool {
 		return false
 	}
 	return v
-}
-
-func debug(args ...any) {
-	fmt.Fprintln(os.Stderr, args...)
-}
-
-func debugf(s string, args ...any) {
-	fmt.Fprintf(os.Stderr, s, args...)
 }
 
 func isInModFile(path string) bool {
